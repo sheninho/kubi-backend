@@ -3,6 +3,7 @@ import random
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import models
 from django.utils import timezone
@@ -49,6 +50,12 @@ class VerificationCode(models.Model):
 
 # Modèle pour les catégories de propriétés
 class Category(models.Model):
+    TYPE_CHOICES = [
+        ('sale', 'Vente'),
+        ('rent', 'Location'),
+        ('both', 'Les deux'),
+    ]
+    application_type = models.CharField(max_length=10, choices=TYPE_CHOICES, default='both')
     name = models.CharField(max_length=100)
 
     def __str__(self):
@@ -106,8 +113,9 @@ class Property(models.Model):
         default='basic_info'
     )
     district = models.ForeignKey(District, on_delete=models.SET_NULL, null=True, blank=True)
-    category = models.ForeignKey(Category, on_delete=models.CASCADE)
-    commission = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, null=True)
+    commission = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
 
     is_active = models.BooleanField(default=True)
     is_available = models.BooleanField(default=True)
@@ -135,23 +143,20 @@ class Image(models.Model):
 
 # Association entre les propriétés et leurs caractéristiques spécifiques
 class Field(models.Model):
-    categories = models.ManyToManyField(Category)
     field_name = models.CharField(max_length=100, unique=True)  # Nom unique du champ
     label = models.CharField(max_length=100)  # Nom d'appellation pour l'affichage
     field_type = models.CharField(max_length=100, blank=True, editable=False)
 
-    class Meta:
-        abstract = True
 
     def __str__(self):
         return f"{self.label} ({self.field_name})"
 
-class LongTextField(Field):
+class LongTextField(models.Model):
+    base_field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='longtext')
     placeholder = models.CharField(max_length=255, blank=True, null=True)
     rows = models.PositiveIntegerField(default=4)
     cols = models.PositiveIntegerField(default=50)
     maxLength = models.PositiveIntegerField(null=True, blank=True)
-    required = models.BooleanField(default=False)
     spellCheck = models.BooleanField(default=True)
 
     def save(self, *args, **kwargs):
@@ -161,8 +166,8 @@ class LongTextField(Field):
     def __str__(self):
         return f"{super().label} ({super().field_name})"
 
-class DateField(Field):
-    required = models.BooleanField(default=False)
+class DateField(models.Model):
+    base_field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='datefield')
     minDate = models.DateField(null=True, blank=True)
     maxDate = models.DateField(null=True, blank=True)
 
@@ -173,8 +178,8 @@ class DateField(Field):
     def __str__(self):
         return f"{super().label} ({super().field_name})"
 
-class IntegerField(Field):
-    required = models.BooleanField(default=False)
+class IntegerField(models.Model):
+    base_field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='integerfield')
     minValue = models.IntegerField(null=True, blank=True)
     maxValue = models.IntegerField(null=True, blank=True)
 
@@ -185,8 +190,8 @@ class IntegerField(Field):
     def __str__(self):
         return f"{super.label} ({super.field_name})"
 
-class SelectField(Field):
-    required = models.BooleanField(default=False)
+class SelectField(models.Model):
+    base_field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='selectfield')
     defaultValue = models.CharField(max_length=255, blank=True, null=True)
 
     def save(self, *args, **kwargs):
@@ -198,8 +203,8 @@ class SelectField(Field):
 
 class SelectOption(models.Model):
     select_field = models.ForeignKey(SelectField, related_name='options', on_delete=models.CASCADE)
-    option_value = models.CharField(max_length=100)
-    option_label = models.CharField(max_length=100)
+    value = models.CharField(max_length=100)
+    label = models.CharField(max_length=100)
 
     def __str__(self):
         return f"{self.select_field.label} - {self.option_label}"
@@ -213,19 +218,24 @@ class SelectFieldDefaultValue(models.Model):
         return f"Default for {self.select_field.label}: {self.default_option.option_label}"
 
 
-class ShortTextField(Field):
+class ShortTextField(models.Model):
+    base_field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='shorttextfield')
     max_length = models.PositiveIntegerField(default=255)
-    required = models.BooleanField(default=False)  # Si le champ est obligatoire
     placeholder = models.CharField(max_length=255, blank=True, null=True)  # Texte indicatif
     default_value = models.CharField(max_length=255, blank=True, null=True)  # Valeur par défaut
     regex_pattern = models.CharField(max_length=255, blank=True, null=True)  # Validation par regex
 
-    def save(self, *args, **kwargs):
-        self.field_type = 'text_short'
-        super(ShortTextField, self).save(*args, **kwargs)
+
+class CategoryField(models.Model):
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="category_fields")
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name="category_fields")
+    is_required = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ('category', 'field')
 
     def __str__(self):
-        return f"{super.label} ({super.field_name})"
+        return f"{self.category.name} - {self.field}"
 
 class PropertyValue(models.Model):
     property = models.ForeignKey(Property, related_name='property_values', on_delete=models.CASCADE)
